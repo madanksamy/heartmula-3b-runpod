@@ -25,7 +25,7 @@ AWS_ACCESS_KEY = os.environ.get("AWS_ACCESS_KEY_ID")
 AWS_SECRET_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
 
 # Model configuration
-MODEL_ID = "amuvarma/HeartMuLa-3B"
+MODEL_ID = "HeartMuLa/HeartMuLa-oss-3B"
 SAMPLE_RATE = 32000
 
 # Global model instance
