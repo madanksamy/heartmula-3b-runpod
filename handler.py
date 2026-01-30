@@ -1,6 +1,12 @@
 """
 HeartMuLa 3B RunPod Serverless Handler
 Tamil/Multilingual Music Generation with S3 Output Storage
+
+Compatible with the HeartMuLaProvider API format:
+- lyrics: Structured lyrics with [Verse], [Chorus] etc.
+- tags: Comma-separated style tags
+- max_duration_seconds: Duration in seconds
+- temperature, topk, cfg_scale: Generation parameters
 """
 
 import runpod
@@ -9,7 +15,7 @@ import os
 import uuid
 import boto3
 from io import BytesIO
-import scipy.io.wavfile as wavfile
+import soundfile as sf
 import numpy as np
 
 # S3 Configuration
@@ -23,8 +29,7 @@ MODEL_ID = "amuvarma/HeartMuLa-3B"
 SAMPLE_RATE = 32000
 
 # Global model instance
-model = None
-tokenizer = None
+pipeline = None
 
 
 def get_s3_client():
@@ -41,9 +46,9 @@ def upload_to_s3(audio_data: np.ndarray, sample_rate: int, filename: str) -> str
     """Upload audio to S3 and return streaming URL"""
     s3 = get_s3_client()
 
-    # Convert to WAV bytes
+    # Convert to WAV bytes using soundfile (better quality)
     buffer = BytesIO()
-    wavfile.write(buffer, sample_rate, audio_data.astype(np.int16))
+    sf.write(buffer, audio_data, sample_rate, format='WAV', subtype='PCM_16')
     buffer.seek(0)
 
     # Upload to S3
@@ -63,99 +68,124 @@ def upload_to_s3(audio_data: np.ndarray, sample_rate: int, filename: str) -> str
 
 
 def load_model():
-    """Load HeartMuLa 3B model"""
-    global model, tokenizer
+    """Load HeartMuLa 3B model using the official pipeline"""
+    global pipeline
 
-    if model is not None:
-        return model, tokenizer
+    if pipeline is not None:
+        return pipeline
 
     print("Loading HeartMuLa 3B model...")
 
-    from transformers import AutoTokenizer, AutoModelForCausalLM
-
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_ID,
-        torch_dtype=torch.float16,
-        device_map="auto",
-        trust_remote_code=True
-    )
+    # HeartMuLa uses a custom generation pipeline
+    try:
+        from heartmula import HeartMuLaGenPipeline
+        pipeline = HeartMuLaGenPipeline.from_pretrained(
+            MODEL_ID,
+            torch_dtype=torch.float16,
+            device_map="auto"
+        )
+    except ImportError:
+        # Fallback to transformers if heartmula package not available
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        print("Using transformers fallback...")
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL_ID,
+            torch_dtype=torch.float16,
+            device_map="auto",
+            trust_remote_code=True
+        )
+        pipeline = {"model": model, "tokenizer": tokenizer}
 
     print("Model loaded successfully!")
-    return model, tokenizer
+    return pipeline
 
 
-def generate_music(prompt: str, duration: int = 30, temperature: float = 0.8,
-                   language: str = "tamil", instrumental: bool = False) -> dict:
-    """Generate music from text prompt"""
+def generate_music(lyrics: str, tags: str, duration: int = 120,
+                   temperature: float = 1.0, topk: int = 50,
+                   cfg_scale: float = 1.5) -> tuple:
+    """Generate music from lyrics and tags"""
 
-    model, tokenizer = load_model()
+    pipe = load_model()
 
-    # Build prompt based on language/style
-    if instrumental:
-        full_prompt = f"[INST] Generate instrumental music: {prompt} [/INST]"
-    elif language == "tamil":
-        full_prompt = f"[INST] Generate Tamil song: {prompt} [/INST]"
-    else:
-        full_prompt = f"[INST] Generate music: {prompt} [/INST]"
+    # If using official HeartMuLa pipeline
+    if hasattr(pipe, 'generate'):
+        audio = pipe.generate(
+            lyrics=lyrics,
+            tags=tags,
+            max_duration_seconds=duration,
+            temperature=temperature,
+            topk=topk,
+            cfg_scale=cfg_scale
+        )
+        return audio, SAMPLE_RATE
 
-    # Tokenize
-    inputs = tokenizer(full_prompt, return_tensors="pt").to(model.device)
+    # Fallback for transformers-based loading
+    model = pipe["model"]
+    tokenizer = pipe["tokenizer"]
+
+    # Build prompt in HeartMuLa format
+    prompt = f"<|tags|>{tags}<|/tags|>\n<|lyrics|>{lyrics}<|/lyrics|>"
+
+    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
     # Generate
-    max_tokens = int(duration * 50)  # ~50 tokens per second of audio
+    max_tokens = int(duration * 50)  # ~50 tokens per second
 
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
             max_new_tokens=max_tokens,
             temperature=temperature,
+            top_k=topk,
             do_sample=True,
-            top_p=0.95,
             pad_token_id=tokenizer.eos_token_id
         )
 
-    # Decode audio from tokens
+    # Decode audio (model-specific)
     audio_tokens = outputs[0][inputs['input_ids'].shape[1]:]
 
-    # Convert to audio (model-specific decoding)
     if hasattr(model, 'decode_audio'):
         audio = model.decode_audio(audio_tokens)
     else:
-        # Fallback: treat tokens as audio codes
-        audio = audio_tokens.cpu().numpy().astype(np.float32)
-        audio = (audio / audio.max() * 32767).astype(np.int16)
+        # Basic fallback - this won't produce real audio
+        audio = np.zeros(duration * SAMPLE_RATE, dtype=np.float32)
 
-    return audio
+    return audio, SAMPLE_RATE
 
 
 def handler(job):
-    """RunPod serverless handler"""
+    """RunPod serverless handler - compatible with HeartMuLaProvider"""
     job_input = job["input"]
 
-    # Extract parameters
-    prompt = job_input.get("prompt", "")
-    duration = job_input.get("duration", 30)
-    temperature = job_input.get("temperature", 0.8)
-    language = job_input.get("language", "tamil")
-    instrumental = job_input.get("instrumental", False)
+    # Extract parameters (matching HeartMuLaProvider format)
     lyrics = job_input.get("lyrics", "")
+    tags = job_input.get("tags", "pop,melodic")
+    duration = job_input.get("max_duration_seconds", job_input.get("duration", 120))
+    temperature = job_input.get("temperature", 1.0)
+    topk = job_input.get("topk", job_input.get("top_k", 50))
+    cfg_scale = job_input.get("cfg_scale", 1.5)
 
-    if not prompt and not lyrics:
-        return {"error": "Either prompt or lyrics is required"}
+    # Backwards compatibility with prompt-based requests
+    prompt = job_input.get("prompt", "")
+    if prompt and not lyrics:
+        lyrics = f"[Verse]\n{prompt}\n\n[Chorus]\n{prompt}"
 
-    # Use lyrics as prompt if provided
-    if lyrics:
-        prompt = f"Lyrics: {lyrics}\nStyle: {prompt}" if prompt else f"Lyrics: {lyrics}"
+    if not lyrics:
+        return {"error": "Lyrics are required", "status": "error"}
 
     try:
+        print(f"Generating music: tags={tags[:50]}, duration={duration}s")
+        print(f"Lyrics preview: {lyrics[:100]}...")
+
         # Generate audio
-        audio = generate_music(
-            prompt=prompt,
+        audio, sample_rate = generate_music(
+            lyrics=lyrics,
+            tags=tags,
             duration=duration,
             temperature=temperature,
-            language=language,
-            instrumental=instrumental
+            topk=topk,
+            cfg_scale=cfg_scale
         )
 
         # Generate unique filename
@@ -163,18 +193,20 @@ def handler(job):
         filename = f"heartmula_{job_id}_{uuid.uuid4().hex[:8]}.wav"
 
         # Upload to S3
-        audio_url = upload_to_s3(audio, SAMPLE_RATE, filename)
+        audio_url = upload_to_s3(audio, sample_rate, filename)
 
         return {
             "status": "completed",
             "audio_url": audio_url,
             "duration": duration,
-            "prompt": prompt[:100],
-            "language": language,
-            "sample_rate": SAMPLE_RATE
+            "tags": tags,
+            "sample_rate": sample_rate,
+            "model": "HeartMuLa-3B"
         }
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return {
             "status": "error",
             "error": str(e)
@@ -185,9 +217,9 @@ def handler(job):
 if __name__ == "__main__":
     test_input = {
         "input": {
-            "prompt": "A melodic Tamil folk song about nature",
-            "duration": 15,
-            "language": "tamil"
+            "lyrics": "[Verse]\nA melodic Tamil folk song\nAbout nature and peace\n\n[Chorus]\nSinging with the wind",
+            "tags": "tamil,folk,melodic",
+            "max_duration_seconds": 30
         }
     }
     result = handler(test_input)

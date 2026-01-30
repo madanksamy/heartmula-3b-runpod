@@ -8,3 +8,5 @@ boto3>=1.28.0
 soundfile>=0.12.0
 einops>=0.7.0
 safetensors>=0.4.0
+# HeartMuLa official package (if available)
+# heartmula>=0.1.0
