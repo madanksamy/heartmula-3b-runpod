@@ -19,11 +19,13 @@ COPY handler.py .
 ENV PYTHONUNBUFFERED=1
 ENV HF_HOME=/app/.cache/huggingface
 
-# Pre-download model (speeds up cold starts significantly)
-RUN python -c "from transformers import AutoTokenizer, AutoModelForCausalLM; \
-    print('Downloading HeartMuLa-3B tokenizer...'); \
-    AutoTokenizer.from_pretrained('HeartMuLa/HeartMuLa-oss-3B', trust_remote_code=True); \
-    print('Downloading HeartMuLa-3B model (~6GB)...'); \
-    AutoModelForCausalLM.from_pretrained('HeartMuLa/HeartMuLa-oss-3B', trust_remote_code=True)"
+# Verify dependencies are installed correctly
+RUN pip install --upgrade sentencepiece tiktoken && \
+    python -c "import sentencepiece; import torch; print(f'PyTorch {torch.__version__}, SentencePiece OK')"
+
+# Pre-download model (speeds up cold starts) - downloads config and tokenizer, model cached on first run
+RUN python -c "from huggingface_hub import snapshot_download; \
+    print('Pre-downloading HeartMuLa-3B model files...'); \
+    snapshot_download('HeartMuLa/HeartMuLa-oss-3B', ignore_patterns=['*.bin', '*.pt'])"
 
 CMD ["python", "-u", "handler.py"]
