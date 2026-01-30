@@ -19,7 +19,11 @@ COPY handler.py .
 ENV PYTHONUNBUFFERED=1
 ENV HF_HOME=/app/.cache/huggingface
 
-# Pre-download model (optional, speeds up cold starts)
-# RUN python -c "from transformers import AutoTokenizer, AutoModelForCausalLM; AutoTokenizer.from_pretrained('amuvarma/HeartMuLa-3B', trust_remote_code=True); AutoModelForCausalLM.from_pretrained('amuvarma/HeartMuLa-3B', trust_remote_code=True)"
+# Pre-download model (speeds up cold starts significantly)
+RUN python -c "from transformers import AutoTokenizer, AutoModelForCausalLM; \
+    print('Downloading HeartMuLa-3B tokenizer...'); \
+    AutoTokenizer.from_pretrained('HeartMuLa/HeartMuLa-oss-3B', trust_remote_code=True); \
+    print('Downloading HeartMuLa-3B model (~6GB)...'); \
+    AutoModelForCausalLM.from_pretrained('HeartMuLa/HeartMuLa-oss-3B', trust_remote_code=True)"
 
 CMD ["python", "-u", "handler.py"]
