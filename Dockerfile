@@ -8,24 +8,27 @@ RUN apt-get update && apt-get install -y \
     libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# Install Python dependencies first
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy handler
-COPY handler.py .
+# Install sentencepiece and tiktoken explicitly (needed for HeartMuLa tokenizer)
+RUN pip install --no-cache-dir sentencepiece tiktoken
+
+# Verify sentencepiece is working
+RUN python -c "import sentencepiece; print('SentencePiece version:', sentencepiece.__version__)"
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV HF_HOME=/app/.cache/huggingface
+ENV HF_HUB_ENABLE_HF_TRANSFER=1
 
-# Verify dependencies are installed correctly
-RUN pip install --upgrade sentencepiece tiktoken && \
-    python -c "import sentencepiece; import torch; print(f'PyTorch {torch.__version__}, SentencePiece OK')"
-
-# Pre-download model (speeds up cold starts) - downloads config and tokenizer, model cached on first run
+# Pre-download model config and tokenizer files (speeds up cold starts)
 RUN python -c "from huggingface_hub import snapshot_download; \
-    print('Pre-downloading HeartMuLa-3B model files...'); \
-    snapshot_download('HeartMuLa/HeartMuLa-oss-3B', ignore_patterns=['*.bin', '*.pt'])"
+    print('Pre-downloading HeartMuLa-3B config files...'); \
+    snapshot_download('HeartMuLa/HeartMuLa-oss-3B', ignore_patterns=['*.bin', '*.pt', '*.safetensors'])"
+
+# Copy handler last (changes more frequently)
+COPY handler.py .
 
 CMD ["python", "-u", "handler.py"]
