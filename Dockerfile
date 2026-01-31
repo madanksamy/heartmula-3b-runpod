@@ -6,27 +6,32 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     libsndfile1 \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies first
+# Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install sentencepiece and tiktoken explicitly (needed for HeartMuLa tokenizer)
+# Install heartlib from GitHub (HeartMuLa official library)
+RUN pip install git+https://github.com/HeartMuLa/heartlib.git
+
+# Install additional dependencies needed by heartlib
 RUN pip install --no-cache-dir sentencepiece tiktoken
 
-# Verify sentencepiece is working
-RUN python -c "import sentencepiece; print('SentencePiece version:', sentencepiece.__version__)"
+# Create checkpoint directory
+RUN mkdir -p /app/ckpt
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV HF_HOME=/app/.cache/huggingface
 ENV HF_HUB_ENABLE_HF_TRANSFER=1
+ENV HEARTMULA_MODEL_PATH=/app/ckpt
 
-# Pre-download model config and tokenizer files (speeds up cold starts)
-RUN python -c "from huggingface_hub import snapshot_download; \
-    print('Pre-downloading HeartMuLa-3B config files...'); \
-    snapshot_download('HeartMuLa/HeartMuLa-oss-3B', ignore_patterns=['*.bin', '*.pt', '*.safetensors'])"
+# Pre-download the HeartMuLa and HeartCodec models
+RUN pip install huggingface_hub[cli] && \
+    huggingface-cli download --local-dir /app/ckpt/HeartMuLa-oss-3B HeartMuLa/HeartMuLa-RL-oss-3B-20260123 && \
+    huggingface-cli download --local-dir /app/ckpt/HeartCodec-oss HeartMuLa/HeartCodec-oss-20260123
 
 # Copy handler last (changes more frequently)
 COPY handler.py .

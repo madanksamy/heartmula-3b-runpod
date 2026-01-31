@@ -2,9 +2,11 @@
 HeartMuLa 3B RunPod Serverless Handler
 Tamil/Multilingual Music Generation with S3 Output Storage
 
+Uses the official heartlib library for generation.
+
 Compatible with the HeartMuLaProvider API format:
 - lyrics: Structured lyrics with [Verse], [Chorus] etc.
-- tags: Comma-separated style tags
+- tags: Comma-separated style tags (no spaces between tags)
 - max_duration_seconds: Duration in seconds
 - temperature, topk, cfg_scale: Generation parameters
 """
@@ -17,6 +19,7 @@ import boto3
 from io import BytesIO
 import soundfile as sf
 import numpy as np
+import tempfile
 
 # S3 Configuration
 S3_BUCKET = os.environ.get("S3_BUCKET", "aiswara-music")
@@ -25,11 +28,11 @@ AWS_ACCESS_KEY = os.environ.get("AWS_ACCESS_KEY_ID")
 AWS_SECRET_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
 
 # Model configuration
-MODEL_ID = "HeartMuLa/HeartMuLa-oss-3B"
+MODEL_PATH = os.environ.get("HEARTMULA_MODEL_PATH", "/app/ckpt")
 SAMPLE_RATE = 32000
 
 # Global model instance
-pipeline = None
+generator = None
 
 
 def get_s3_client():
@@ -42,23 +45,21 @@ def get_s3_client():
     )
 
 
-def upload_to_s3(audio_data: np.ndarray, sample_rate: int, filename: str) -> str:
-    """Upload audio to S3 and return streaming URL"""
+def upload_to_s3(audio_path: str, filename: str) -> str:
+    """Upload audio file to S3 and return streaming URL"""
     s3 = get_s3_client()
 
-    # Convert to WAV bytes using soundfile (better quality)
-    buffer = BytesIO()
-    sf.write(buffer, audio_data, sample_rate, format='WAV', subtype='PCM_16')
-    buffer.seek(0)
-
-    # Upload to S3
     key = f"generated/{filename}"
-    s3.upload_fileobj(
-        buffer,
+
+    # Determine content type
+    content_type = 'audio/mpeg' if filename.endswith('.mp3') else 'audio/wav'
+
+    s3.upload_file(
+        audio_path,
         S3_BUCKET,
         key,
         ExtraArgs={
-            'ContentType': 'audio/wav',
+            'ContentType': content_type,
             'ACL': 'public-read'
         }
     )
@@ -68,90 +69,75 @@ def upload_to_s3(audio_data: np.ndarray, sample_rate: int, filename: str) -> str
 
 
 def load_model():
-    """Load HeartMuLa 3B model using the official pipeline"""
-    global pipeline
+    """Load HeartMuLa 3B model using heartlib"""
+    global generator
 
-    if pipeline is not None:
-        return pipeline
+    if generator is not None:
+        return generator
 
-    print("Loading HeartMuLa 3B model...")
+    print("Loading HeartMuLa 3B model with heartlib...")
 
-    # HeartMuLa uses a custom generation pipeline
     try:
-        from heartmula import HeartMuLaGenPipeline
-        pipeline = HeartMuLaGenPipeline.from_pretrained(
-            MODEL_ID,
-            torch_dtype=torch.float16,
-            device_map="auto"
-        )
-    except ImportError:
-        # Fallback to transformers if heartmula package not available
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-        print("Using transformers fallback...")
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
-        model = AutoModelForCausalLM.from_pretrained(
-            MODEL_ID,
-            torch_dtype=torch.float16,
-            device_map="auto",
-            trust_remote_code=True
-        )
-        pipeline = {"model": model, "tokenizer": tokenizer}
+        from heartlib import HeartMuLaGenerator
 
-    print("Model loaded successfully!")
-    return pipeline
+        generator = HeartMuLaGenerator(
+            model_path=MODEL_PATH,
+            version="3B",
+            device="cuda" if torch.cuda.is_available() else "cpu"
+        )
+        print("HeartMuLa model loaded successfully!")
+
+    except ImportError as e:
+        print(f"heartlib import error: {e}")
+        raise RuntimeError("heartlib not installed correctly")
+    except Exception as e:
+        print(f"Model loading error: {e}")
+        raise
+
+    return generator
 
 
 def generate_music(lyrics: str, tags: str, duration: int = 120,
                    temperature: float = 1.0, topk: int = 50,
-                   cfg_scale: float = 1.5) -> tuple:
-    """Generate music from lyrics and tags"""
+                   cfg_scale: float = 1.5) -> str:
+    """Generate music from lyrics and tags, returns path to output file"""
 
-    pipe = load_model()
+    gen = load_model()
 
-    # If using official HeartMuLa pipeline
-    if hasattr(pipe, 'generate'):
-        audio = pipe.generate(
-            lyrics=lyrics,
-            tags=tags,
-            max_duration_seconds=duration,
+    # Create temp directory for output
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Write lyrics and tags to files (heartlib reads from files)
+        lyrics_file = os.path.join(tmpdir, "lyrics.txt")
+        tags_file = os.path.join(tmpdir, "tags.txt")
+        output_file = os.path.join(tmpdir, "output.mp3")
+
+        with open(lyrics_file, 'w') as f:
+            f.write(lyrics)
+
+        # Tags should be comma-separated without spaces
+        clean_tags = ','.join([t.strip() for t in tags.split(',')])
+        with open(tags_file, 'w') as f:
+            f.write(clean_tags)
+
+        # Generate music
+        gen.generate(
+            lyrics_path=lyrics_file,
+            tags_path=tags_file,
+            output_path=output_file,
             temperature=temperature,
             topk=topk,
             cfg_scale=cfg_scale
         )
-        return audio, SAMPLE_RATE
 
-    # Fallback for transformers-based loading
-    model = pipe["model"]
-    tokenizer = pipe["tokenizer"]
+        # Read the generated file and return a permanent copy
+        output_bytes = open(output_file, 'rb').read()
 
-    # Build prompt in HeartMuLa format
-    prompt = f"<|tags|>{tags}<|/tags|>\n<|lyrics|>{lyrics}<|/lyrics|>"
+    # Save to a persistent temp file
+    final_output = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
+    final_output.write(output_bytes)
+    final_output.close()
 
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-
-    # Generate
-    max_tokens = int(duration * 50)  # ~50 tokens per second
-
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=max_tokens,
-            temperature=temperature,
-            top_k=topk,
-            do_sample=True,
-            pad_token_id=tokenizer.eos_token_id
-        )
-
-    # Decode audio (model-specific)
-    audio_tokens = outputs[0][inputs['input_ids'].shape[1]:]
-
-    if hasattr(model, 'decode_audio'):
-        audio = model.decode_audio(audio_tokens)
-    else:
-        # Basic fallback - this won't produce real audio
-        audio = np.zeros(duration * SAMPLE_RATE, dtype=np.float32)
-
-    return audio, SAMPLE_RATE
+    return final_output.name
 
 
 def handler(job):
@@ -179,7 +165,7 @@ def handler(job):
         print(f"Lyrics preview: {lyrics[:100]}...")
 
         # Generate audio
-        audio, sample_rate = generate_music(
+        audio_path = generate_music(
             lyrics=lyrics,
             tags=tags,
             duration=duration,
@@ -190,17 +176,20 @@ def handler(job):
 
         # Generate unique filename
         job_id = job.get("id", str(uuid.uuid4())[:8])
-        filename = f"heartmula_{job_id}_{uuid.uuid4().hex[:8]}.wav"
+        filename = f"heartmula_{job_id}_{uuid.uuid4().hex[:8]}.mp3"
 
         # Upload to S3
-        audio_url = upload_to_s3(audio, sample_rate, filename)
+        audio_url = upload_to_s3(audio_path, filename)
+
+        # Clean up temp file
+        os.unlink(audio_path)
 
         return {
             "status": "completed",
             "audio_url": audio_url,
             "duration": duration,
             "tags": tags,
-            "sample_rate": sample_rate,
+            "sample_rate": SAMPLE_RATE,
             "model": "HeartMuLa-3B"
         }
 
