@@ -16,9 +16,6 @@ import torch
 import os
 import uuid
 import boto3
-from io import BytesIO
-import soundfile as sf
-import numpy as np
 import tempfile
 
 # S3 Configuration
@@ -32,7 +29,7 @@ MODEL_PATH = os.environ.get("HEARTMULA_MODEL_PATH", "/app/ckpt")
 SAMPLE_RATE = 32000
 
 # Global model instance
-generator = None
+pipeline = None
 
 
 def get_s3_client():
@@ -70,31 +67,37 @@ def upload_to_s3(audio_path: str, filename: str) -> str:
 
 def load_model():
     """Load HeartMuLa 3B model using heartlib"""
-    global generator
+    global pipeline
 
-    if generator is not None:
-        return generator
+    if pipeline is not None:
+        return pipeline
 
     print("Loading HeartMuLa 3B model with heartlib...")
 
     try:
-        from heartlib import HeartMuLaGenerator
+        from heartlib import HeartMuLaGenPipeline
 
-        generator = HeartMuLaGenerator(
-            model_path=MODEL_PATH,
+        # Determine device and dtype
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        dtype = torch.float16 if device == "cuda" else torch.float32
+
+        pipeline = HeartMuLaGenPipeline.from_pretrained(
+            MODEL_PATH,
+            device=device,
+            dtype=dtype,
             version="3B",
-            device="cuda" if torch.cuda.is_available() else "cpu"
+            lazy_load=False
         )
         print("HeartMuLa model loaded successfully!")
 
     except ImportError as e:
         print(f"heartlib import error: {e}")
-        raise RuntimeError("heartlib not installed correctly")
+        raise RuntimeError(f"heartlib not installed correctly: {e}")
     except Exception as e:
         print(f"Model loading error: {e}")
         raise
 
-    return generator
+    return pipeline
 
 
 def generate_music(lyrics: str, tags: str, duration: int = 120,
@@ -102,7 +105,7 @@ def generate_music(lyrics: str, tags: str, duration: int = 120,
                    cfg_scale: float = 1.5) -> str:
     """Generate music from lyrics and tags, returns path to output file"""
 
-    gen = load_model()
+    pipe = load_model()
 
     # Create temp directory for output
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -119,13 +122,20 @@ def generate_music(lyrics: str, tags: str, duration: int = 120,
         with open(tags_file, 'w') as f:
             f.write(clean_tags)
 
-        # Generate music
-        gen.generate(
-            lyrics_path=lyrics_file,
-            tags_path=tags_file,
+        # Convert duration to milliseconds
+        max_audio_length_ms = duration * 1000
+
+        # Generate music using the pipeline
+        # The pipeline expects a dict with paths
+        pipe(
+            {
+                "lyrics_path": lyrics_file,
+                "tags_path": tags_file,
+            },
             output_path=output_file,
-            temperature=temperature,
+            max_audio_length_ms=max_audio_length_ms,
             topk=topk,
+            temperature=temperature,
             cfg_scale=cfg_scale
         )
 
