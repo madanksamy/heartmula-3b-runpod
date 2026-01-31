@@ -56,8 +56,7 @@ def upload_to_s3(audio_path: str, filename: str) -> str:
         S3_BUCKET,
         key,
         ExtraArgs={
-            'ContentType': content_type,
-            'ACL': 'public-read'
+            'ContentType': content_type
         }
     )
 
