@@ -27,8 +27,10 @@ ENV PYTHONUNBUFFERED=1
 ENV HF_HOME=/app/.cache/huggingface
 ENV HEARTMULA_MODEL_PATH=/app/ckpt
 
-# Pre-download the HeartMuLa and HeartCodec models (without hf_transfer for compatibility)
+# Pre-download the HeartMuLa models and config files (without hf_transfer for compatibility)
+# Structure: /app/ckpt/tokenizer.json, gen_config.json, HeartMuLa-oss-3B/, HeartCodec-oss/
 RUN pip install huggingface_hub[cli] && \
+    HF_HUB_ENABLE_HF_TRANSFER=0 huggingface-cli download --local-dir /app/ckpt HeartMuLa/HeartMuLaGen && \
     HF_HUB_ENABLE_HF_TRANSFER=0 huggingface-cli download --local-dir /app/ckpt/HeartMuLa-oss-3B HeartMuLa/HeartMuLa-RL-oss-3B-20260123 && \
     HF_HUB_ENABLE_HF_TRANSFER=0 huggingface-cli download --local-dir /app/ckpt/HeartCodec-oss HeartMuLa/HeartCodec-oss-20260123
 
