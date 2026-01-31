@@ -78,8 +78,12 @@ def load_model():
         from heartlib import HeartMuLaGenPipeline
 
         # Determine device and dtype
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        dtype = torch.float16 if device == "cuda" else torch.float32
+        device_str = "cuda" if torch.cuda.is_available() else "cpu"
+        device = {
+            "mula": torch.device(device_str),
+            "codec": torch.device(device_str),
+        }
+        dtype = torch.float16 if device_str == "cuda" else torch.float32
 
         pipeline = HeartMuLaGenPipeline.from_pretrained(
             MODEL_PATH,
