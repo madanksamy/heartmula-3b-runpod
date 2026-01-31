@@ -25,13 +25,12 @@ RUN mkdir -p /app/ckpt
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV HF_HOME=/app/.cache/huggingface
-ENV HF_HUB_ENABLE_HF_TRANSFER=1
 ENV HEARTMULA_MODEL_PATH=/app/ckpt
 
-# Pre-download the HeartMuLa and HeartCodec models
+# Pre-download the HeartMuLa and HeartCodec models (without hf_transfer for compatibility)
 RUN pip install huggingface_hub[cli] && \
-    huggingface-cli download --local-dir /app/ckpt/HeartMuLa-oss-3B HeartMuLa/HeartMuLa-RL-oss-3B-20260123 && \
-    huggingface-cli download --local-dir /app/ckpt/HeartCodec-oss HeartMuLa/HeartCodec-oss-20260123
+    HF_HUB_ENABLE_HF_TRANSFER=0 huggingface-cli download --local-dir /app/ckpt/HeartMuLa-oss-3B HeartMuLa/HeartMuLa-RL-oss-3B-20260123 && \
+    HF_HUB_ENABLE_HF_TRANSFER=0 huggingface-cli download --local-dir /app/ckpt/HeartCodec-oss HeartMuLa/HeartCodec-oss-20260123
 
 # Copy handler last (changes more frequently)
 COPY handler.py .
