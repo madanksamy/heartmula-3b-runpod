@@ -130,13 +130,13 @@ def generate_music(lyrics: str, tags: str, duration: int = 120,
         max_audio_length_ms = duration * 1000
 
         # Generate music using the pipeline
-        # The pipeline expects a dict with paths
+        # The pipeline expects a dict with file paths under "lyrics" and "tags" keys
         pipe(
             {
-                "lyrics_path": lyrics_file,
-                "tags_path": tags_file,
+                "lyrics": lyrics_file,
+                "tags": tags_file,
             },
-            output_path=output_file,
+            save_path=output_file,
             max_audio_length_ms=max_audio_length_ms,
             topk=topk,
             temperature=temperature,
